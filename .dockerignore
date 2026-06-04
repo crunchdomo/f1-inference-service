@@ -1,0 +1,19 @@
+# Keep the build context small — none of this is needed to build the image.
+.git
+.github
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Generated at build/run time, not inputs to the build
+model/
+logs/
+
+# Not copied into the image anyway
+tests/
+*.md
+load_test.py
+requirements-dev.txt
+conftest.py

@@ -24,3 +24,8 @@ COPY data ./data
 # `docker compose up` a true one-command start — there's nothing to pre-run, no
 # volume to mount, no "did you remember to train first?" footgun.
 RUN python -m app.train
+
+# Drop root: create an unprivileged user, give it ownership of /app, and switch to
+# it. Everything above ran as root (install + train); the running process does not.
+RUN useradd --create-home appuser && chown -R appuser /app
+USER appuser

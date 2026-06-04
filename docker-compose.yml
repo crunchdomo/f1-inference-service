@@ -8,6 +8,13 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"   # exposed so you can poke at it with redis-cli if curious
+    healthcheck:
+      # "started" only means the container launched; this proves Redis is actually
+      # answering, so the api/worker can wait for "ready" instead of racing it.
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   # The web layer. Accepts requests, hands work to Celery, returns a task_id.
   api:
@@ -28,7 +35,8 @@ services:
       # read it back via /history and it survives container restarts.
       - ./logs:/app/logs
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy   # wait until Redis is actually ready
 
   # The compute layer. Same image as `api`, but runs the Celery worker instead of
   # the web server. THIS is the process that actually loads the model and predicts.
@@ -48,7 +56,8 @@ services:
       # api so /history can read it. ./logs is a real folder on your computer.
       - ./logs:/app/logs
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
 
   # Flower — a real-time web dashboard for Celery. It connects to the SAME broker
   # and reads live worker + task state, so you get a GUI at localhost:5555 showing
@@ -56,15 +65,17 @@ services:
   # no ML itself; it's pure monitoring. (Same image again, just a different command.)
   flower:
     build: .
-    command: celery -A app.celery_app:celery_app flower --port=5555
+    # Behind HTTP basic auth — it's an admin dashboard, so it shouldn't be open.
+    # Credentials default to admin/admin for local dev; override via the host env
+    # or a .env file (FLOWER_USER / FLOWER_PASSWORD). Use real secrets in a deploy.
+    command: celery -A app.celery_app:celery_app flower --port=5555 --basic-auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin}
     ports:
       - "5555:5555"
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
-      # Let the JSON /api/* endpoints work without a login. Fine for a local dev
-      # tool; the browser dashboard works regardless. Drop this in any real deploy.
-      - FLOWER_UNAUTHENTICATED_API=true
     depends_on:
-      - redis
-      - worker
+      redis:
+        condition: service_healthy
+      worker:
+        condition: service_started

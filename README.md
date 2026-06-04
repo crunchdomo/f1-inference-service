@@ -39,7 +39,8 @@ team, or circuit ids are rejected with a 422 rather than a silent wrong answer.
 
 `/options` lists the driver/team/circuit ids you can use. There's interactive docs
 at `/docs`, a prediction history at `/history`, and a Flower dashboard at `:5555`
-for watching tasks go through.
+for watching tasks go through (login `admin` / `admin` by default — override with
+`FLOWER_USER` / `FLOWER_PASSWORD`).
 
 ## Tests
 
@@ -127,3 +128,14 @@ docker-compose.yml
 ```
 
 Regenerate the dataset with `python app/data_prep.py`.
+
+## Production notes
+
+A few small hardening choices, since "runs on my machine" isn't the bar:
+
+- The container runs as a **non-root user** (`appuser`) — install and training happen
+  as root at build time, the running process doesn't.
+- **Flower is behind basic auth** — it's an admin dashboard, so it isn't left open.
+- **Redis has a health check**, and the api/worker wait for it to be *ready*
+  (`condition: service_healthy`), not just *started*.
+- A **`.dockerignore`** keeps the build context small and out of the image.
