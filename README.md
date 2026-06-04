@@ -1,5 +1,7 @@
 # F1 finishing-position predictor
 
+![CI](https://github.com/crunchdomo/f1-inference-service/actions/workflows/ci.yml/badge.svg)
+
 A small async ML service that predicts where an F1 driver finishes a race, given
 their starting grid position, team, the circuit, and the season. I built it to get
 hands-on with the FastAPI + Celery + Redis stack and the practical side of serving
@@ -30,9 +32,26 @@ curl localhost:8000/result/<task_id>
 # {"status":"SUCCESS","result":{"predicted_position":4,...}}
 ```
 
+If you'd rather skip the polling, `POST /predict-sync` runs the model inline and
+returns the answer directly. That's fine here because the model is fast; the async
+path above is the one you'd want for a slow model or for batches. Unknown driver,
+team, or circuit ids are rejected with a 422 rather than a silent wrong answer.
+
 `/options` lists the driver/team/circuit ids you can use. There's interactive docs
 at `/docs`, a prediction history at `/history`, and a Flower dashboard at `:5555`
 for watching tasks go through.
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m app.train   # builds the model the tests need
+pytest
+```
+
+There's a small suite: a model quality gate (held-out MAE must stay under 4.0),
+API checks (valid request, bad input is rejected, the sync path works), and the
+core logic. It runs in CI on every push (see the badge above).
 
 ## How it works
 
@@ -81,14 +100,17 @@ so it survives restarts, and you can read it back at `/history`.
 ```
 app/
   main.py           FastAPI endpoints
+  predictor.py      load model + run one prediction (shared by task and sync)
   tasks.py          the Celery predict task
   celery_app.py     Celery / Redis config
   train.py          trains the model
   data_prep.py      fetches the F1 data
   prediction_log.py prediction logging
+tests/              pytest suite (model gate, api, logic)
 data/f1_results.csv committed so the build is reproducible offline
 Dockerfile
 docker-compose.yml
+.github/workflows/  CI
 ```
 
 Regenerate the dataset with `python app/data_prep.py`.
