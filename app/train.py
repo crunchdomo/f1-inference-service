@@ -23,7 +23,8 @@ MODEL_PATH = os.environ.get("MODEL_PATH", "model/model.pkl")
 META_PATH = os.path.join(os.path.dirname(MODEL_PATH), "metadata.json")
 
 CATEGORICAL = ["driver", "constructor", "circuit"]
-NUMERIC = ["grid", "season", "circuit_dnf_rate"]
+NUMERIC = ["grid", "season", "circuit_dnf_rate", "driver_form", "team_form"]
+FORM_WINDOW = 5  # "recent form" = average finish over the last 5 races
 
 
 def is_finisher(status: str) -> bool:
@@ -37,10 +38,37 @@ def load_data() -> pd.DataFrame:
     df["position"] = df["position"].astype(int)
     df["grid"] = df["grid"].astype(int)
     df["season"] = df["season"].astype(int)
+    df["round"] = df["round"].astype(int)
     df.loc[df["grid"] == 0, "grid"] = 20  # pit-lane start -> back of grid
     df["is_dnf"] = (~df["status"].map(is_finisher)).astype(int)
     df["podium"] = (df["position"] <= 3).astype(int)  # the target: top-3 finish
     return df
+
+
+def add_form_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Recent form = average finishing position over the previous races. The
+    .shift(1) keeps it leakage-safe: it only uses races BEFORE this one. This is
+    the signal for "who's competitive *now*" — which grid can't fully carry when
+    predicting a season the model has never seen."""
+    df = df.sort_values(["season", "round"]).copy()
+    overall = df["position"].mean()
+    for col, key in [("driver_form", "driver"), ("team_form", "constructor")]:
+        df[col] = (
+            df.groupby(key)["position"]
+            .transform(lambda s: s.shift(1).rolling(FORM_WINDOW, min_periods=1).mean())
+            .fillna(overall)
+        )
+    return df
+
+
+def form_lookups(df: pd.DataFrame) -> tuple[dict, dict, float]:
+    """For serving: each driver's/team's form from their most recent races."""
+    s = df.sort_values(["season", "round"])
+    drv = s.groupby("driver")["position"].apply(lambda x: x.tail(FORM_WINDOW).mean()).to_dict()
+    team = s.groupby("constructor")["position"].apply(lambda x: x.tail(FORM_WINDOW).mean()).to_dict()
+    overall = float(df["position"].mean())
+    return ({k: float(v) for k, v in drv.items()},
+            {k: float(v) for k, v in team.items()}, overall)
 
 
 def circuit_dnf_lookup(df: pd.DataFrame) -> tuple[dict, float]:
@@ -67,6 +95,7 @@ def build_pipeline() -> Pipeline:
 
 def main() -> None:
     df = load_data()
+    df = add_form_features(df)  # leakage-safe (shifted)
 
     # Time-based split: train on past seasons, evaluate on the most recent one.
     # This mirrors the real use case (predict an upcoming race) and is fully
@@ -96,7 +125,12 @@ def main() -> None:
     full_df = add_dnf_feature(df, lookup_all, fallback_all)
     model.fit(full_df[cols], full_df["podium"])
 
-    artifact = {"model": model, "circuit_dnf_rate": lookup_all, "global_dnf_rate": fallback_all}
+    driver_form, team_form, global_form = form_lookups(df)
+    artifact = {
+        "model": model,
+        "circuit_dnf_rate": lookup_all, "global_dnf_rate": fallback_all,
+        "driver_form": driver_form, "team_form": team_form, "global_form": global_form,
+    }
     os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
     joblib.dump(artifact, MODEL_PATH)
 

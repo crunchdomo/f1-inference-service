@@ -3,12 +3,12 @@ must stay above a threshold. This is the check a CI/CD pipeline would gate on.""
 
 from sklearn.metrics import roc_auc_score
 
-from app.train import (CATEGORICAL, NUMERIC, add_dnf_feature, build_pipeline,
-                       circuit_dnf_lookup, load_data)
+from app.train import (CATEGORICAL, NUMERIC, add_dnf_feature, add_form_features,
+                       build_pipeline, circuit_dnf_lookup, load_data)
 
 
 def test_auc_above_threshold():
-    df = load_data()
+    df = add_form_features(load_data())
     test_season = int(df["season"].max())
     train_df = df[df["season"] < test_season].copy()
     test_df = df[df["season"] == test_season].copy()

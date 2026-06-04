@@ -69,6 +69,7 @@ on both sides).
 | `grid` | numeric | Starting position — by far the strongest signal |
 | `season` | numeric | The era (a driver's rookie car vs their title car) |
 | `circuit_dnf_rate` | numeric | Historical attrition at the track — a leakage-free proxy for the chaos (weather, reliability) that shuffles the order |
+| `driver_form`, `team_form` | numeric | Average finish over the last 5 races (shifted, leakage-safe) — "who's competitive *this* season" |
 | `driver`, `constructor`, `circuit` | one-hot | Identities |
 
 `circuit_dnf_rate` is computed from the **training rows only**, then mapped onto the
@@ -87,15 +88,14 @@ never seen. Measured that way (train 2014–2023, test 2024):
 
 | Metric | Value | Meaning |
 |---|---|---|
-| **ROC-AUC** | **~0.90** | How well it *ranks* drivers by podium chance (1.0 = perfect, 0.5 = coin flip) |
+| **ROC-AUC** | **~0.93** | How well it *ranks* drivers by podium chance (1.0 = perfect, 0.5 = coin flip) |
 | **Accuracy** | **~0.88** | Right/wrong at a 0.5 threshold (but accuracy is weak on imbalanced data) |
-| **Brier** | **~0.09** | Calibration of the probabilities (lower is better) — "70%" roughly means 70% |
+| **Brier** | **~0.08** | Calibration of the probabilities (lower is better) — "70%" roughly means 70% |
 
 AUC and Brier matter more than accuracy here: with only ~15% podiums, a model that
 always says "no podium" already scores ~85% accuracy, so accuracy alone is
 misleading. AUC says the *ranking* is strong; Brier says the *probabilities* are
-trustworthy. (A random split scores ~0.93 AUC — the gap to 0.90 is the honest cost
-of predicting a genuinely unseen season.)
+trustworthy.
 
 ---
 
@@ -138,14 +138,20 @@ exactly why this framing suits a noisy sport.
 - **This race's actual pit stops / tyre choices / recorded weather** → these are
   *outcomes*, known only after the race → excluded, because using them is leakage.
 
-### Tried and cut: recent form
+### Recent form — and a lesson about evaluation
 
-I added rolling **recent-form** features (driver's and team's average finish over
-their last 5 races, shifted to stay leakage-safe) expecting them to help. They
-didn't — AUC was unchanged. The reason: a driver in good form, in a fast car,
-already *qualifies near the front*, so `grid` is effectively a proxy for current
-form. The features were redundant, so I removed them. A feature only earns its place
-if it adds signal *beyond* what's already there.
+The `driver_form` / `team_form` features have a story worth telling. I first tested
+them with a **random** train/test split, where they looked **useless** — AUC was
+unchanged (0.931 → 0.929) — so I cut them, reasoning that grid already encodes form
+(a fast in-form car qualifies near the front).
+
+Then I re-checked under the **time-based** split (the one we actually evaluate on)
+and the result flipped: form **helped**, AUC **0.895 → 0.926**. The reason is the
+whole point: under a random split the model already sees the test season during
+training, so it knows which cars are fast; under a time-based split it has *never
+seen* the test season, and recent form is the only signal for who's competitive
+*now*. **A feature's value depends on the evaluation regime** — so I kept them, and
+this is why measuring under the *right* split matters.
 
 ### Clean features worth adding next (no leakage)
 

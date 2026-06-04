@@ -11,14 +11,20 @@ MODEL_PATH = os.environ.get("MODEL_PATH", "model/model.pkl")
 _model = None
 _dnf_lookup = {}
 _dnf_fallback = 0.0
+_driver_form = {}
+_team_form = {}
+_global_form = 10.0
 
 
 def load() -> None:
-    global _model, _dnf_lookup, _dnf_fallback
+    global _model, _dnf_lookup, _dnf_fallback, _driver_form, _team_form, _global_form
     artifact = joblib.load(MODEL_PATH)
     _model = artifact["model"]
     _dnf_lookup = artifact["circuit_dnf_rate"]
     _dnf_fallback = artifact["global_dnf_rate"]
+    _driver_form = artifact["driver_form"]
+    _team_form = artifact["team_form"]
+    _global_form = artifact["global_form"]
 
 
 def predict_one(grid: int, driver: str, constructor: str, circuit: str, season: int) -> dict:
@@ -28,10 +34,14 @@ def predict_one(grid: int, driver: str, constructor: str, circuit: str, season: 
     grid_val = 20 if grid == 0 else grid  # pit-lane start -> back of grid
     dnf_rate = _dnf_lookup.get(circuit, _dnf_fallback)
 
+    # Form features are server-side lookups (the caller doesn't supply them) — we
+    # know each driver's/team's recent form from history.
     row = pd.DataFrame([{
         "grid": grid_val,
         "season": season,
         "circuit_dnf_rate": dnf_rate,
+        "driver_form": _driver_form.get(driver, _global_form),
+        "team_form": _team_form.get(constructor, _global_form),
         "driver": driver,
         "constructor": constructor,
         "circuit": circuit,
