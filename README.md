@@ -38,10 +38,20 @@ returns the answer directly. That's fine here because the model is fast; the asy
 path above is the one you'd want for a slow model or for batches. Unknown driver,
 team, or circuit ids are rejected with a 422 rather than a silent wrong answer.
 
-`/options` lists the driver/team/circuit ids you can use. There's interactive docs
-at `/docs`, a prediction history at `/history`, and a Flower dashboard at `:5555`
-for watching tasks go through (login `admin` / `admin` by default — override with
-`FLOWER_USER` / `FLOWER_PASSWORD`).
+The cleaner way to use it is to **pick a real race**: `GET /races` lists every race
+(season, round, circuit), and `GET /race/{season}/{round}` returns that race's actual
+field — every driver with their real team and grid slot — ranked by predicted podium
+chance, next to what actually happened. That avoids the free-form pitfall of building
+a driver/team combination that never existed.
+
+```bash
+curl localhost:8000/races?season=2024          # list 2024 races
+curl localhost:8000/race/2024/16               # the field for round 16, with predictions
+```
+
+`/options` lists the driver/team/circuit ids for the free-form `/predict` form. There's
+interactive docs at `/docs`, a prediction history at `/history`, and a Flower dashboard
+at `:5555` (login `admin` / `admin` by default — override with `FLOWER_USER` / `FLOWER_PASSWORD`).
 
 ## Tests
 

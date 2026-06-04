@@ -33,3 +33,18 @@ def test_predict_sync_runs_the_model():
     r = client.post("/predict-sync", json=VALID)
     assert r.status_code == 200
     assert 0.0 <= r.json()["podium_probability"] <= 1.0
+
+
+def test_races_list():
+    r = client.get("/races")
+    assert r.status_code == 200
+    assert len(r.json()["races"]) > 0
+
+
+def test_race_field_is_ranked():
+    race = client.get("/races").json()["races"][0]
+    r = client.get(f"/race/{race['season']}/{race['round']}")
+    assert r.status_code == 200
+    probs = [d["podium_probability"] for d in r.json()["field"]]
+    assert len(probs) > 0
+    assert probs == sorted(probs, reverse=True)  # ranked by podium chance

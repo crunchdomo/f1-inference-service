@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app import predictor
+from app import predictor, races
 from app.celery_app import celery_app
 from app.prediction_log import read_recent
 
@@ -89,6 +89,39 @@ def options() -> dict:
         "constructors": METADATA.get("options", {}).get("constructor", []),
         "circuits": METADATA.get("options", {}).get("circuit", []),
     }
+
+
+@app.get("/races")
+def list_races(season: int | None = None) -> dict:
+    """Every real race (season, round, circuit) — for a race picker. Optional ?season=."""
+    items = races.list_races()
+    if season is not None:
+        items = [r for r in items if r["season"] == season]
+    return {"races": items}
+
+
+@app.get("/race/{season}/{rnd}")
+def race_field(season: int, rnd: int) -> dict:
+    """The real field for one race: each driver's predicted podium chance, ranked,
+    next to what actually happened. No impossible combos — these are real entries."""
+    entries = races.get_race(season, rnd)
+    if not entries:
+        raise HTTPException(404, "no such race")
+    circuit = entries[0]["circuit"]
+    field = []
+    for e in entries:
+        pred = predictor.predict_one(grid=e["grid"], driver=e["driver"],
+                                     constructor=e["constructor"], circuit=circuit, season=season)
+        field.append({
+            "driver": e["driver"],
+            "constructor": e["constructor"],
+            "grid": e["grid"],
+            "podium_probability": pred["podium_probability"],
+            "actual_position": e["position"],
+            "actual_podium": e["position"] <= 3,
+        })
+    field.sort(key=lambda x: x["podium_probability"], reverse=True)
+    return {"season": season, "round": rnd, "circuit": circuit, "field": field}
 
 
 @app.get("/history")
