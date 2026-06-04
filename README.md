@@ -1,11 +1,12 @@
-# F1 finishing-position predictor
+# F1 podium-probability predictor
 
 ![CI](https://github.com/crunchdomo/f1-inference-service/actions/workflows/ci.yml/badge.svg)
 
-A small async ML service that predicts where an F1 driver finishes a race, given
-their starting grid position, team, the circuit, and the season. I built it to get
-hands-on with the FastAPI + Celery + Redis stack and the practical side of serving
-a model: don't block the web server, and don't reload the model on every request.
+A small async ML service that predicts the **chance an F1 driver finishes on the
+podium** (top 3), given their starting grid position, team, the circuit, and the
+season. I built it to get hands-on with the FastAPI + Celery + Redis stack and the
+practical side of serving a model: don't block the web server, and don't reload the
+model on every request.
 
 The prediction runs on a Celery worker rather than inside the request, so the API
 stays responsive. Redis sits in between as the job queue. Everything comes up with
@@ -29,7 +30,7 @@ curl -X POST localhost:8000/predict \
 # {"task_id":"..."}
 
 curl localhost:8000/result/<task_id>
-# {"status":"SUCCESS","result":{"predicted_position":4,...}}
+# {"status":"SUCCESS","result":{"podium_probability":0.76,"podium_likely":true,...}}
 ```
 
 If you'd rather skip the polling, `POST /predict-sync` runs the model inline and
@@ -50,7 +51,7 @@ python -m app.train   # builds the model the tests need
 pytest
 ```
 
-There's a small suite: a model quality gate (held-out MAE must stay under 4.0),
+There's a small suite: a model quality gate (held-out ROC-AUC must stay above 0.85),
 API checks (valid request, bad input is rejected, the sync path works), and the
 core logic. It runs in CI on every push (see the badge above).
 
@@ -90,18 +91,20 @@ decoupling and buffering the burst — holds either way.
 
 ## The model
 
-A RandomForest regressor in a one-hot pipeline, trained on race results from
-2014–2024 pulled from the Jolpica/Ergast API. It predicts finishing position from
-grid, driver, team, circuit, season, and a per-circuit historical DNF rate.
+A RandomForest **classifier** in a one-hot pipeline, trained on race results from
+2014–2024 pulled from the Jolpica/Ergast API. It outputs the **probability of a
+podium** (top-3 finish) from grid, driver, team, circuit, season, and a per-circuit
+historical DNF rate.
 
-It's not very accurate — around 3.5 positions of error, R² ~0.39 — and that's
-mostly the sport, not the model. Crashes, mechanical failures, and weather aren't
-predictable from a grid slot, so grid position does most of the work.
+It's a probability on purpose: F1 is noisy (crashes, failures, weather), so a
+calibrated "70% chance" is a more honest output than a single hard prediction.
+On held-out data it gets **ROC-AUC ~0.93** (ranks who's likely to podium well) and
+a **Brier score ~0.07** (the probabilities are reasonably calibrated). Grid position
+does most of the work, as you'd expect.
 
-I left out actual weather, pit stops, and tyre data even though they'd obviously
-help, because you only know those after the race — training on them would be
-leakage. The data pipeline, the leakage reasoning, and a case the model gets wrong
-are in [MODEL.md](./MODEL.md).
+I left out actual weather, pit stops, and tyre data even though they'd help, because
+you only know those after the race — training on them would be leakage. The data
+pipeline, the leakage reasoning, and the feature roadmap are in [MODEL.md](./MODEL.md).
 
 ## Prediction log
 

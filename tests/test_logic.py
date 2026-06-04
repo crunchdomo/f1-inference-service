@@ -11,13 +11,13 @@ def test_is_finisher():
     assert not is_finisher("Engine")
 
 
-def test_predict_one_returns_valid_position():
+def test_predict_one_returns_probability():
     out = predictor.predict_one(grid=1, **VALID)
-    assert 1 <= out["predicted_position"] <= 20
-    assert {"predicted_position", "raw_prediction", "circuit_dnf_rate"} <= set(out)
+    assert 0.0 <= out["podium_probability"] <= 1.0
+    assert {"podium_probability", "podium_likely", "circuit_dnf_rate"} <= set(out)
 
 
 def test_grid_zero_does_not_break():
     # pit-lane start (grid 0) is remapped to the back, not treated as pole
     out = predictor.predict_one(grid=0, **VALID)
-    assert 1 <= out["predicted_position"] <= 20
+    assert 0.0 <= out["podium_probability"] <= 1.0

@@ -1,192 +1,141 @@
-# The F1 Model — Data, Training, and How It All Fits Together
+# The F1 model — data, training, and how it fits together
 
-This documents the F1 finishing-position predictor: where the data comes from, how
-it's turned into a model, how that model is served, what it gets right, what it
-gets wrong (and *why*), and how weather / pit stops / tyres are handled.
+This documents the podium-probability model: where the data comes from, how it's
+trained, how it's served, and what it does and doesn't do.
 
 > The **serving architecture** (FastAPI + Celery + Redis + Docker + Flower) is
-> documented in [`WHY.md`](./WHY.md). This doc is only about the **model and data layer**.
-> That separation is the whole point: we changed the model without touching the
-> platform.
+> documented in [`WHY.md`](./WHY.md). This doc is only about the **model and data
+> layer** — which is the part you can swap without touching the platform.
 
 ---
 
-## 1. What we're predicting
+## 1. What it predicts
 
-**Input** (a race entry): `grid` position, `driver`, `constructor` (team),
+**Input:** a race entry — `grid` position, `driver`, `constructor` (team),
 `circuit`, and `season`.
-**Output**: predicted **finishing position** (1 = win, 20 = back of the field).
+**Output:** the **probability that the driver finishes on the podium** (top 3).
 
-It's a **regression** problem — we predict a number and round it to a grid slot.
+It's a **classification** problem (podium: yes/no), and the model returns the
+probability of "yes" rather than a hard label — because F1 is noisy, and a
+calibrated "72% chance" is a more honest, more useful output than a flat
+yes/no.
+
+Why probability and not, say, exact finishing position? Predicting an exact
+position (`P4.2`) pretends to a precision that doesn't exist in a sport full of
+crashes and safety cars. The probability of a meaningful *event* is the right shape
+of answer for a noisy outcome.
 
 ---
 
-## 2. The end-to-end flow (how the pieces fit)
+## 2. The end-to-end flow
 
 ```
-  data_prep.py          train.py              model.pkl           tasks.py (worker)
-  ───────────           ────────              ─────────           ─────────────────
-  Jolpica API  ──fetch─▶ f1_results.csv ─train─▶ {pipeline +       ──load──▶ in-memory
-  (real F1     (4626    (one-hot + numeric        dnf lookup}       once at startup,
-   results)     rows)    + RandomForest)                            serve every request
-
-         build time (baked into Docker image)        │  run time
-  ────────────────────────────────────────────────── │ ──────────────────────
-                                                      ▼
-   Client ─POST /predict {grid,driver,team,circuit,season}─▶ FastAPI ─▶ Redis ─▶ worker
-   Client ◀──────────────── {predicted_position} ◀── /result ◀── Redis ◀── result ◀┘
+  data_prep.py          train.py              model.pkl           predictor.py
+  ───────────           ────────              ─────────           ─────────────
+  Jolpica API  ──fetch─▶ f1_results.csv ─train─▶ {classifier +     ──load──▶ in memory,
+  (real F1     (4626    (one-hot +              dnf lookup}        serve every request
+   results)     rows)    RandomForest)
 ```
 
-Two distinct phases:
 - **Build time** (once, when the image is built): `data_prep.py` → CSV →
   `train.py` → `model.pkl`. Baked into the image.
-- **Run time** (every request): a Celery worker that already holds the model in
-  memory predicts. No training, no disk loads on the hot path.
+- **Run time** (every request): a worker holds the model in memory and predicts.
 
 ---
 
-## 3. The data pipeline — `data_prep.py`
+## 3. The data — `data_prep.py`
 
-- **Source:** the [Jolpica API](https://api.jolpi.ca) — the maintained successor to
+- **Source:** the [Jolpica API](https://api.jolpi.ca), the maintained successor to
   the Ergast F1 database. Free, no auth.
-- **What we pull:** every race result for **2014–2024** (turbo-hybrid era). For each
-  result: `season, round, circuit, driver, constructor, grid, position, status`.
+- **What we pull:** every race result for **2014–2024**. For each: `season, round,
+  circuit, driver, constructor, grid, position, status`.
 - **Volume:** **4,626 rows** — 59 drivers, 20 constructors, 32 circuits.
-- **Why a committed CSV?** Fetch once locally, commit the CSV, so the Docker build
-  trains **offline and reproducibly** — no network dependency mid-build.
+- **Why a committed CSV?** Fetch once locally, commit it, so the build trains
+  **offline and reproducibly**.
 
 ---
 
 ## 4. Training — `train.py`
 
-### Features — all known BEFORE the race (this matters; see §7 on leakage)
+### The target
+`podium = (position <= 3)` — a 1/0 label. About **15%** of entries are podiums, so
+the classes are imbalanced (we stratify the train/test split to keep the rate even
+on both sides).
 
-| Feature | Type | What it contributes |
+### Features — all known BEFORE the race (no leakage)
+
+| Feature | Type | Why |
 |---|---|---|
 | `grid` | numeric | Starting position — by far the strongest signal |
-| `season` | numeric | The **era**: distinguishes a driver's rookie car from their title car |
-| `circuit_dnf_rate` | numeric | Historical attrition at the track — a **leakage-free proxy for the chaos that weather, reliability, and pit problems cause** |
-| `driver`, `constructor`, `circuit` | one-hot | Identities (112 columns after encoding) |
+| `season` | numeric | The era (a driver's rookie car vs their title car) |
+| `circuit_dnf_rate` | numeric | Historical attrition at the track — a leakage-free proxy for the chaos (weather, reliability) that shuffles the order |
+| `driver`, `constructor`, `circuit` | one-hot | Identities |
 
-The whole thing is one sklearn **Pipeline** (`ColumnTransformer` one-hot for the
-categories + passthrough for the numerics → `RandomForestRegressor`). The API
-passes raw values; the pipeline encodes internally. One artifact, no train/serve skew.
+`circuit_dnf_rate` is computed from the **training rows only**, then mapped onto the
+test rows — so a race's own outcome never leaks into the feature it's scored on.
 
-### `circuit_dnf_rate` — incorporating "weather & pit stops" honestly
-
-We can't use *this race's* actual weather or pit stops (that's leakage — §7). But
-the **consequence** of those things — cars not finishing — is a stable property of
-each circuit that we *do* know in advance. Street and weather-prone circuits
-(Monaco, Baku, Spa, Singapore) have high historical DNF rates; clean ones (Barcelona)
-are low. We compute that rate from history and feed it in.
-
-**Leakage-safe computation:** the rate is derived from the **training split only**,
-then mapped onto the held-out test rows — so a race's own outcome never leaks into
-the feature it's scored on. (The shipped model recomputes it on all data.)
-
-### Two cleaning decisions
-
-- **`grid = 0`** (pit-lane start) → remapped to **20** (back of grid), at train and
-  predict time, so it isn't misread as better than pole.
-- **DNFs are kept** with their classified finishing position — they're real, and
-  they teach the model that races are noisy.
+Everything is one sklearn **Pipeline** (one-hot encode the categories → pass the
+numerics through → `RandomForestClassifier`). The API passes raw values; the
+pipeline encodes internally, so there's no train/serve skew.
 
 ### Evaluation (held-out 20%)
 
-| | Original (grid + ids) | **+ season + circuit_dnf_rate** |
+| Metric | Value | Meaning |
 |---|---|---|
-| **MAE** | 3.57 positions | **3.54 positions** |
-| **R²** | 0.358 | **0.389** |
+| **ROC-AUC** | **~0.93** | How well it *ranks* drivers by podium chance (1.0 = perfect, 0.5 = coin flip) |
+| **Accuracy** | **~0.90** | Right/wrong at a 0.5 threshold (but accuracy is weak on imbalanced data) |
+| **Brier** | **~0.07** | Calibration of the probabilities (lower is better) — "70%" roughly means 70% |
 
-The new features measurably raised R² (more variance explained). MAE barely moved,
-which is expected — `grid` already carried most of the predictable signal, and the
-rest of a race's outcome is genuinely unpredictable.
-
----
-
-## 5. Serving — `tasks.py` + `main.py`
-
-- The worker **preloads** the artifact once at startup (`worker_process_init`):
-  the pipeline **plus** the circuit→DNF-rate lookup. Per-request load cost = 0 ms.
-- `predict` fills `circuit_dnf_rate` from the circuit id (a **server-side lookup**,
-  not a user input — the caller only supplies the circuit), builds a one-row
-  DataFrame, and calls `pipeline.predict()`.
-- `POST /predict` validates `{grid, driver, constructor, circuit, season}` and hands
-  it to Celery. `GET /options` lists valid ids, seasons, features, and metrics.
+AUC and Brier matter more than accuracy here: with only ~15% podiums, a model that
+always says "no podium" already scores ~85% accuracy, so accuracy alone is
+misleading. AUC says the *ranking* is strong; Brier says the *probabilities* are
+trustworthy.
 
 ---
 
-## 6. What it gets right — and what stays hard
+## 5. Serving — `predictor.py` / `tasks.py` / `main.py`
 
-### Right (in-distribution)
+- The worker **preloads** the model once at startup (`worker_process_init`) plus the
+  circuit→DNF-rate lookup. Per-request load cost = 0 ms.
+- `predict_one` fills `circuit_dnf_rate` from the circuit id, builds a one-row
+  DataFrame, and calls `predict_proba` — returning `podium_probability` and a
+  convenience `podium_likely` (proba ≥ 0.5).
+- `POST /predict` (async) and `POST /predict-sync` (inline) both validate the input
+  against the known ids first; unknown driver/team/circuit → 422.
 
-Real 2023 scenarios land within a position or two — matching the MAE:
+---
+
+## 6. Sanity check — does it behave sensibly?
+
+Holding everything fixed and varying only grid behaves the way intuition says:
 
 ```
-  Verstappen P1, Red Bull, Bahrain 2023   -> P2   (actually won)
-  Hamilton   P3, Mercedes, Silverstone 23 -> P4   (actually P3)
-  Leclerc    P1, Ferrari, Monza 2019      -> P2   (actually won)
-  Sargeant   P20, Williams, Bahrain 2023  -> P16  (backmarker, sensible)
+  Verstappen, Red Bull, Bahrain 2023:  pole -> 95%   ...   P15 -> 43%
+  Hamilton,   Mercedes, Silverstone:   P3   -> 76%
+  Sargeant,   Williams, Monza 2024:    P18  -> 0%
 ```
 
-And sweeping grid for a well-represented case (Hamilton/Mercedes/Silverstone) is
-monotonic: grid 1→P1.2, 5→P2.8, 10→P5.7, 15→P8.6.
-
-### Still hard (out-of-distribution) — and why season only partly helped
-
-Ask for **Verstappen on pole at Monza** and it predicts ~P8. Adding `season`
-improved this (it was ~P13 before), but didn't fix it — because the problem isn't a
-missing feature, it's **structural**:
-
-- Verstappen started pole at Monza exactly **once** in the data (2021 — he crashed).
-  "Verstappen + Monza + pole" is a combination that essentially **never happened**.
-- **RandomForests can't extrapolate.** For a feature combination it hasn't seen, a
-  tree model falls back to the nearest leaves it *has* seen — here, his *typical*
-  Monza results (midfield) — and the strong global `grid` signal gets overridden by
-  the memorized driver×circuit cell.
-
-This is the honest, important lesson: **more features raise aggregate accuracy, but
-no feature lets a tree model reason about combinations outside its training data.**
-The genuine fixes are different in kind (see §7) — more data, or a model/encoding
-that doesn't memorize sparse cells. A model that *claimed* to nail this OOD case
-would be overfitting, not succeeding.
+A front-running car high up the grid is very likely to podium; a backmarker isn't;
+a fast car starting midfield has a real-but-not-certain chance. The probability
+output degrades gracefully instead of giving a falsely precise number — which is
+exactly why this framing suits a noisy sport.
 
 ---
 
-## 7. Weather, pit stops, tyres — how they're handled
+## 7. Weather, pit stops, and the leakage rule
 
-### The rule that governs all of it: no leakage
+> **A feature is only usable if you'd know its value before the race.**
 
-> **A feature is only usable if you'd know its value *before* the race.**
+- **Grid, driver, team, circuit, season** → known pre-race → used.
+- **Pit/weather/attrition *chaos*** → captured via `circuit_dnf_rate` (the historical
+  tendency, known in advance), not the actual values.
+- **This race's actual pit stops / tyre choices / recorded weather** → these are
+  *outcomes*, known only after the race → excluded, because using them is leakage.
 
-| Thing | Verdict | How it's handled |
-|---|---|---|
-| `grid`, `driver`, `team`, `circuit`, `season` | ✅ pre-race | Used directly |
-| **Pit-stop / weather / attrition *chaos*** | ✅ via proxy | `circuit_dnf_rate` — the historical *tendency*, known in advance |
-| **This race's actual pit-stop count** | ❌ leakage | An outcome; excluded. (Only the *planned* strategy would be fair, which we don't have.) |
-| **This race's actual tyre stints** | ❌ leakage | An outcome; excluded |
-| **This race's recorded weather** | ⚠️ forecast only | A *forecast* would be fair (see below); the *recorded* value is post-hoc |
-
-So pit stops and weather **are** represented — through `circuit_dnf_rate`, the
-leakage-free signal you'd actually have pre-race — while their post-race actuals are
-deliberately kept out to avoid a model that cheats.
-
-### True per-race weather — the one real extension left
-
-To use *this race's* weather legitimately, you'd bring in a **pre-race forecast**
-(rain probability, track temp). The data source is the
-[FastF1](https://docs.fastf1.dev) library, which exposes recorded session weather
-for **2018+**. The build would be:
-1. For each race, pull session weather via FastF1 → derive `was_wet` / `track_temp`.
-2. Train on recorded weather; at predict time, supply the **forecast** (a mild,
-   accepted train/serve gap).
-
-It's a real data-engineering lift (heavier dependency, 2018+ only, slow downloads),
-which is why it's scoped as a possible next iteration rather than baked in here.
-
-### Other clean, no-leakage features worth adding next
+### Clean features worth adding next (no leakage)
 
 | Feature | Why it helps | Source |
 |---|---|---|
 | Qualifying gap (ms off pole) | Finer than integer grid | Jolpica `qualifying` endpoint |
-| Recent driver/team form | Captures upgrades / momentum | Rolling mean of prior races (no leakage if shifted) |
+| Recent driver/team form | Captures upgrades / momentum | Rolling mean of *prior* races (shifted to avoid leakage) |
+| Calibrated probabilities | Tighten the Brier score | `CalibratedClassifierCV` on top of the model |

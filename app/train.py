@@ -1,9 +1,9 @@
-"""Train the F1 finishing-position model -> model.pkl + metadata.json.
+"""Train the F1 podium-probability model -> model.pkl + metadata.json.
 
-Features (all known before a race): grid, season, circuit_dnf_rate (historical
-attrition at the circuit), and driver/constructor/circuit one-hot encoded. The
-race's actual weather/pit/tyre data is left out on purpose — those are outcomes,
-so using them would be leakage. See MODEL.md.
+Predicts the probability a driver finishes on the podium (top 3), from features
+known before the race: grid, season, circuit_dnf_rate (historical attrition at the
+circuit), and driver/constructor/circuit (one-hot). No post-race info, so no
+leakage. See MODEL.md.
 """
 
 import json
@@ -12,8 +12,8 @@ import os
 import joblib
 import pandas as pd
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, brier_score_loss, roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
@@ -39,6 +39,7 @@ def load_data() -> pd.DataFrame:
     df["season"] = df["season"].astype(int)
     df.loc[df["grid"] == 0, "grid"] = 20  # pit-lane start -> back of grid
     df["is_dnf"] = (~df["status"].map(is_finisher)).astype(int)
+    df["podium"] = (df["position"] <= 3).astype(int)  # the target: top-3 finish
     return df
 
 
@@ -60,41 +61,48 @@ def build_pipeline() -> Pipeline:
     )
     return Pipeline([
         ("prep", preprocessor),
-        ("rf", RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)),
+        ("rf", RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1)),
     ])
 
 
 def main() -> None:
     df = load_data()
 
-    # Split first, then build circuit_dnf_rate from the train rows only, so the
-    # test score isn't contaminated by the held-out races' own outcomes.
-    train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
+    # Stratify so train/test keep the same podium rate (podium is the minority class).
+    train_df, test_df = train_test_split(
+        df, test_size=0.2, random_state=42, stratify=df["podium"]
+    )
+
+    # Build circuit_dnf_rate from train rows only — no leakage into the test score.
     lookup, fallback = circuit_dnf_lookup(train_df)
     train_df = add_dnf_feature(train_df, lookup, fallback)
     test_df = add_dnf_feature(test_df, lookup, fallback)
 
     cols = NUMERIC + CATEGORICAL
     model = build_pipeline()
-    model.fit(train_df[cols], train_df["position"])
+    model.fit(train_df[cols], train_df["podium"])
 
-    preds = model.predict(test_df[cols])
-    mae = mean_absolute_error(test_df["position"], preds)
-    r2 = r2_score(test_df["position"], preds)
-    print(f"Test MAE: {mae:.2f} positions  |  R2: {r2:.3f}  |  rows: {len(df)}")
+    proba = model.predict_proba(test_df[cols])[:, 1]
+    preds = (proba >= 0.5).astype(int)
+    auc = roc_auc_score(test_df["podium"], proba)          # ranking quality
+    acc = accuracy_score(test_df["podium"], preds)         # at a 0.5 threshold
+    brier = brier_score_loss(test_df["podium"], proba)     # calibration (lower better)
+    print(f"Test ROC-AUC: {auc:.3f}  |  accuracy: {acc:.3f}  |  Brier: {brier:.3f}  |  rows: {len(df)}")
 
     # Ship a model trained on all the data, with the lookup recomputed on all of it.
     lookup_all, fallback_all = circuit_dnf_lookup(df)
     full_df = add_dnf_feature(df, lookup_all, fallback_all)
-    model.fit(full_df[cols], full_df["position"])
+    model.fit(full_df[cols], full_df["podium"])
 
     artifact = {"model": model, "circuit_dnf_rate": lookup_all, "global_dnf_rate": fallback_all}
     os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
     joblib.dump(artifact, MODEL_PATH)
 
     metadata = {
-        "metrics": {"mae": round(float(mae), 2), "r2": round(float(r2), 3)},
+        "metrics": {"roc_auc": round(float(auc), 3), "accuracy": round(float(acc), 3),
+                    "brier": round(float(brier), 3)},
         "n_rows": int(len(df)),
+        "podium_rate": round(float(df["podium"].mean()), 3),  # baseline rate of a podium
         "seasons": sorted(df["season"].unique().tolist()),
         "features": cols,
         "options": {c: sorted(df[c].unique().tolist()) for c in CATEGORICAL},

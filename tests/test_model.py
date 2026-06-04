@@ -1,16 +1,18 @@
-"""Quality gate: the model's held-out error must stay under a threshold.
+"""Quality gate: the model's ranking quality (ROC-AUC) must stay above a threshold.
 This is the check a CI/CD pipeline would gate a deploy on."""
 
-from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 
 from app.train import (CATEGORICAL, NUMERIC, add_dnf_feature, build_pipeline,
                        circuit_dnf_lookup, load_data)
 
 
-def test_mae_under_threshold():
+def test_auc_above_threshold():
     df = load_data()
-    train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
+    train_df, test_df = train_test_split(
+        df, test_size=0.2, random_state=42, stratify=df["podium"]
+    )
 
     lookup, fallback = circuit_dnf_lookup(train_df)
     train_df = add_dnf_feature(train_df, lookup, fallback)
@@ -18,7 +20,8 @@ def test_mae_under_threshold():
 
     cols = NUMERIC + CATEGORICAL
     model = build_pipeline()
-    model.fit(train_df[cols], train_df["position"])
+    model.fit(train_df[cols], train_df["podium"])
 
-    mae = mean_absolute_error(test_df["position"], model.predict(test_df[cols]))
-    assert mae < 4.0
+    proba = model.predict_proba(test_df[cols])[:, 1]
+    auc = roc_auc_score(test_df["podium"], proba)
+    assert auc > 0.85

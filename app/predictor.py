@@ -36,10 +36,11 @@ def predict_one(grid: int, driver: str, constructor: str, circuit: str, season: 
         "constructor": constructor,
         "circuit": circuit,
     }])
-    raw = float(_model.predict(row)[0])
+    # predict_proba returns [P(no podium), P(podium)] — we want the second.
+    proba = float(_model.predict_proba(row)[0][1])
 
     return {
-        "predicted_position": int(max(1, min(20, round(raw)))),  # clamp to 1..20
-        "raw_prediction": round(raw, 2),
+        "podium_probability": round(proba, 3),
+        "podium_likely": bool(proba >= 0.5),
         "circuit_dnf_rate": round(dnf_rate, 3),
     }

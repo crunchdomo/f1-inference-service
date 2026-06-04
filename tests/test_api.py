@@ -32,4 +32,4 @@ def test_unknown_driver_is_rejected():
 def test_predict_sync_runs_the_model():
     r = client.post("/predict-sync", json=VALID)
     assert r.status_code == 200
-    assert 1 <= r.json()["predicted_position"] <= 20
+    assert 0.0 <= r.json()["podium_probability"] <= 1.0
