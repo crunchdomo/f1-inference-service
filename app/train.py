@@ -68,12 +68,14 @@ def build_pipeline() -> Pipeline:
 def main() -> None:
     df = load_data()
 
-    # Stratify so train/test keep the same podium rate (podium is the minority class).
-    train_df, test_df = train_test_split(
-        df, test_size=0.2, random_state=42, stratify=df["podium"]
-    )
+    # Time-based split: train on past seasons, evaluate on the most recent one.
+    # This mirrors the real use case (predict an upcoming race) and is fully
+    # leakage-proof — the model never sees anything from the test season.
+    test_season = int(df["season"].max())
+    train_df = df[df["season"] < test_season].copy()
+    test_df = df[df["season"] == test_season].copy()
 
-    # Build circuit_dnf_rate from train rows only — no leakage into the test score.
+    # Build circuit_dnf_rate from the training seasons only.
     lookup, fallback = circuit_dnf_lookup(train_df)
     train_df = add_dnf_feature(train_df, lookup, fallback)
     test_df = add_dnf_feature(test_df, lookup, fallback)
@@ -87,7 +89,7 @@ def main() -> None:
     auc = roc_auc_score(test_df["podium"], proba)          # ranking quality
     acc = accuracy_score(test_df["podium"], preds)         # at a 0.5 threshold
     brier = brier_score_loss(test_df["podium"], proba)     # calibration (lower better)
-    print(f"Test ROC-AUC: {auc:.3f}  |  accuracy: {acc:.3f}  |  Brier: {brier:.3f}  |  rows: {len(df)}")
+    print(f"Test (season {test_season}) ROC-AUC: {auc:.3f}  |  accuracy: {acc:.3f}  |  Brier: {brier:.3f}")
 
     # Ship a model trained on all the data, with the lookup recomputed on all of it.
     lookup_all, fallback_all = circuit_dnf_lookup(df)

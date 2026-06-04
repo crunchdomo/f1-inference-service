@@ -1,8 +1,7 @@
-"""Quality gate: the model's ranking quality (ROC-AUC) must stay above a threshold.
-This is the check a CI/CD pipeline would gate a deploy on."""
+"""Quality gate: the model's ranking quality (ROC-AUC) on a held-out future season
+must stay above a threshold. This is the check a CI/CD pipeline would gate on."""
 
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import train_test_split
 
 from app.train import (CATEGORICAL, NUMERIC, add_dnf_feature, build_pipeline,
                        circuit_dnf_lookup, load_data)
@@ -10,9 +9,9 @@ from app.train import (CATEGORICAL, NUMERIC, add_dnf_feature, build_pipeline,
 
 def test_auc_above_threshold():
     df = load_data()
-    train_df, test_df = train_test_split(
-        df, test_size=0.2, random_state=42, stratify=df["podium"]
-    )
+    test_season = int(df["season"].max())
+    train_df = df[df["season"] < test_season].copy()
+    test_df = df[df["season"] == test_season].copy()
 
     lookup, fallback = circuit_dnf_lookup(train_df)
     train_df = add_dnf_feature(train_df, lookup, fallback)

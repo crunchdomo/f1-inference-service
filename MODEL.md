@@ -78,18 +78,24 @@ Everything is one sklearn **Pipeline** (one-hot encode the categories → pass t
 numerics through → `RandomForestClassifier`). The API passes raw values; the
 pipeline encodes internally, so there's no train/serve skew.
 
-### Evaluation (held-out 20%)
+### Evaluation (time-based: train past seasons, test the most recent)
+
+We **don't** use a random train/test split. For time-ordered data a random split
+inflates the score, because the model gets to see the same era on both sides. The
+honest test is the real use case: train on past seasons, predict a future one it has
+never seen. Measured that way (train 2014–2023, test 2024):
 
 | Metric | Value | Meaning |
 |---|---|---|
-| **ROC-AUC** | **~0.93** | How well it *ranks* drivers by podium chance (1.0 = perfect, 0.5 = coin flip) |
-| **Accuracy** | **~0.90** | Right/wrong at a 0.5 threshold (but accuracy is weak on imbalanced data) |
-| **Brier** | **~0.07** | Calibration of the probabilities (lower is better) — "70%" roughly means 70% |
+| **ROC-AUC** | **~0.90** | How well it *ranks* drivers by podium chance (1.0 = perfect, 0.5 = coin flip) |
+| **Accuracy** | **~0.88** | Right/wrong at a 0.5 threshold (but accuracy is weak on imbalanced data) |
+| **Brier** | **~0.09** | Calibration of the probabilities (lower is better) — "70%" roughly means 70% |
 
 AUC and Brier matter more than accuracy here: with only ~15% podiums, a model that
 always says "no podium" already scores ~85% accuracy, so accuracy alone is
 misleading. AUC says the *ranking* is strong; Brier says the *probabilities* are
-trustworthy.
+trustworthy. (A random split scores ~0.93 AUC — the gap to 0.90 is the honest cost
+of predicting a genuinely unseen season.)
 
 ---
 
@@ -132,10 +138,18 @@ exactly why this framing suits a noisy sport.
 - **This race's actual pit stops / tyre choices / recorded weather** → these are
   *outcomes*, known only after the race → excluded, because using them is leakage.
 
+### Tried and cut: recent form
+
+I added rolling **recent-form** features (driver's and team's average finish over
+their last 5 races, shifted to stay leakage-safe) expecting them to help. They
+didn't — AUC was unchanged. The reason: a driver in good form, in a fast car,
+already *qualifies near the front*, so `grid` is effectively a proxy for current
+form. The features were redundant, so I removed them. A feature only earns its place
+if it adds signal *beyond* what's already there.
+
 ### Clean features worth adding next (no leakage)
 
-| Feature | Why it helps | Source |
+| Feature | Why it might help | Source |
 |---|---|---|
-| Qualifying gap (ms off pole) | Finer than integer grid | Jolpica `qualifying` endpoint |
-| Recent driver/team form | Captures upgrades / momentum | Rolling mean of *prior* races (shifted to avoid leakage) |
+| Qualifying gap (ms off pole) | A *margin*, which grid (a rank) doesn't capture | Jolpica `qualifying` endpoint |
 | Calibrated probabilities | Tighten the Brier score | `CalibratedClassifierCV` on top of the model |

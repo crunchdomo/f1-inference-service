@@ -98,9 +98,10 @@ historical DNF rate.
 
 It's a probability on purpose: F1 is noisy (crashes, failures, weather), so a
 calibrated "70% chance" is a more honest output than a single hard prediction.
-On held-out data it gets **ROC-AUC ~0.93** (ranks who's likely to podium well) and
-a **Brier score ~0.07** (the probabilities are reasonably calibrated). Grid position
-does most of the work, as you'd expect.
+Evaluated the honest way — train on past seasons, test on a future one it's never
+seen — it gets **ROC-AUC ~0.90** (ranks who's likely to podium well) and a **Brier
+score ~0.09** (the probabilities are reasonably calibrated). Grid position does most
+of the work, as you'd expect.
 
 I left out actual weather, pit stops, and tyre data even though they'd help, because
 you only know those after the race — training on them would be leakage. The data
