@@ -1,0 +1,70 @@
+# Declares the whole topology — three services on one network — so the entire
+# system starts with a single `docker compose up --build`.
+
+services:
+  # The message broker + result backend. The piece that decouples the API from the
+  # workers (see WHY.md). In-memory, so enqueue/dequeue is sub-millisecond.
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"   # exposed so you can poke at it with redis-cli if curious
+
+  # The web layer. Accepts requests, hands work to Celery, returns a task_id.
+  api:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      # Note the host is `redis`, not `localhost`: inside the compose network each
+      # service is reachable by its service name. This overrides the localhost
+      # defaults in celery_app.py.
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - MODEL_PATH=/app/model/model.pkl
+      - PREDICTION_LOG=/app/logs/predictions.jsonl
+    volumes:
+      # Share the prediction log with your real computer (./logs) so the API can
+      # read it back via /history and it survives container restarts.
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+
+  # The compute layer. Same image as `api`, but runs the Celery worker instead of
+  # the web server. THIS is the process that actually loads the model and predicts.
+  # Scale it independently with: docker compose up --scale worker=3
+  worker:
+    build: .
+    # -E broadcasts task events (received/started/succeeded/failed) onto the broker
+    # so monitoring tools like Flower can show live task history, not just liveness.
+    command: celery -A app.celery_app:celery_app worker --loglevel=info -E
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - MODEL_PATH=/app/model/model.pkl
+      - PREDICTION_LOG=/app/logs/predictions.jsonl
+    volumes:
+      # The worker WRITES every prediction here; the same folder is mounted into the
+      # api so /history can read it. ./logs is a real folder on your computer.
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+
+  # Flower — a real-time web dashboard for Celery. It connects to the SAME broker
+  # and reads live worker + task state, so you get a GUI at localhost:5555 showing
+  # every task flow through, success/failure counts, and per-task timings. It runs
+  # no ML itself; it's pure monitoring. (Same image again, just a different command.)
+  flower:
+    build: .
+    command: celery -A app.celery_app:celery_app flower --port=5555
+    ports:
+      - "5555:5555"
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      # Let the JSON /api/* endpoints work without a login. Fine for a local dev
+      # tool; the browser dashboard works regardless. Drop this in any real deploy.
+      - FLOWER_UNAUTHENTICATED_API=true
+    depends_on:
+      - redis
+      - worker
