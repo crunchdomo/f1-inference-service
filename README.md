@@ -74,6 +74,19 @@ that bites once the model is large.
 
 More on why each piece is here, and the alternatives, in [WHY.md](./WHY.md).
 
+## Load test
+
+`python load_test.py 1000` fires 1000 predictions at the API and times how long
+they take. On my machine the API accepted all 1000 in ~2s and stayed responsive —
+the queue absorbs the burst instead of the web server blocking, which is the whole
+point of the async design. The workers then drained them at ~290 predictions/s.
+
+One honest finding: scaling to three worker services *didn't* speed it up. The task
+is CPU-bound, and a single worker already runs one process per core, so it saturates
+the machine; adding more processes just added contention. More throughput here means
+more cores or machines, not more workers on the same box. The queue's job —
+decoupling and buffering the burst — holds either way.
+
 ## The model
 
 A RandomForest regressor in a one-hot pipeline, trained on race results from
