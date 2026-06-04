@@ -4,13 +4,23 @@ import json
 import os
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app import predictor
 from app.celery_app import celery_app
 from app.prediction_log import read_recent
 
-app = FastAPI(title="F1 Finishing-Position Predictor")
+app = FastAPI(title="F1 Podium-Probability Predictor")
+
+# Allow a browser frontend (v0 / Vercel / localhost) to call the API. Defaults to
+# all origins for dev; set CORS_ORIGINS (comma-separated) to restrict in production.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Categories + metrics written by train.py at build time; powers /options.
 META_PATH = os.path.join(os.path.dirname(os.environ.get("MODEL_PATH", "model/model.pkl")), "metadata.json")

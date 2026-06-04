@@ -144,3 +144,5 @@ A few small hardening choices, since "runs on my machine" isn't the bar:
 - **Redis has a health check**, and the api/worker wait for it to be *ready*
   (`condition: service_healthy`), not just *started*.
 - A **`.dockerignore`** keeps the build context small and out of the image.
+- **CORS** is enabled so a browser frontend can call the API — open for dev, but
+  restrictable to specific origins via the `CORS_ORIGINS` env var.
